@@ -1,0 +1,241 @@
+
+kind: Service
+apiVersion: v1
+metadata:
+  name: sftp
+  labels:
+    environment: production
+spec:
+  type: "ClusterIP"
+  ports:
+  - name: "ssh"
+    port: 30001
+    targetPort: 2001
+  selector:
+    app: sftp
+
+---
+
+kind: Deployment
+apiVersion: extensions/v1beta1
+metadata:
+  name: sftp
+  labels:
+    environment: production
+    app: sftp
+spec:
+  replicas: 1
+  minReadySeconds: 10
+  template:
+    metadata:
+      labels:
+        environment: production
+        app: sftp
+      #annotations:
+        #container.apparmor.security.beta.kubernetes.io/sftp: runtime/default
+    spec:
+      securityContext:
+        fsGroup: 100
+        runAsUser: 1000
+      volumes:
+      - name: usersconf
+        configMap:
+          name: usersconf
+      - name: ftp-pv
+        persistentVolumeClaim:
+          claimName: ftp-pv-claim
+      - name: ftp-run
+        emptyDir: {}
+      - name: sshd-config
+        configMap:
+          name: sshd-config-map
+      - name: authorized-keys
+        configMap:
+          name: authorized-keys
+      - name: sshd-ed-key
+        configMap:
+          name: ssh-ed-key
+      - name: sshd-key
+        configMap:
+          name: ssh-key
+      containers:
+        - name: sftp
+          image: caladreas/sftp:b18
+          # image: atmoz/sftp:latest
+          imagePullPolicy: Always
+          securityContext:
+            readOnlyRootFilesystem: true
+            allowPrivilegeEscalation: false
+          ports:
+            - containerPort: 2001
+          volumeMounts:
+            - mountPath: "/home/foo/backups"
+              name: ftp-pv
+            - mountPath: "/var/run/sftp/pid/"
+              name: ftp-run
+            - mountPath: "/etc/ssh/sshd_config"
+              subPath: "sshd_config"
+              name: sshd-config
+            - mountPath: "/etc/ssh/ssh_host_ed25519_key"
+              subPath: "ssh_host_ed25519_key"
+              name: sshd-ed-key
+              readOnly: true
+            - mountPath: "/etc/ssh/ssh_host_rsa_key"
+              subPath: "ssh_host_rsa_key"
+              name: sshd-key
+              readOnly: true
+            - mountPath: "/home/foo/.ssh/authorized_keys"
+              subPath: "authorized_keys"
+              name: authorized-keys
+            - mountPath: "/etc/sftp/users.conf"
+              subPath: "users.conf"
+              name: usersconf
+              readOnly: true
+            - mountPath: "/var/run/sftp/users.conf"
+              subPath: "users.conf"
+              name: usersconf
+              readOnly: true
+---
+
+kind: PersistentVolumeClaim
+apiVersion: v1
+metadata:
+  name: ftp-pv-claim
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 3Gi
+
+---
+
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: sshd-config-map
+data:
+  sshd_config: |
+    # Secure defaults
+    # See: https://stribika.github.io/2015/01/04/secure-secure-shell.html
+    Protocol 2
+    HostKey /etc/ssh/ssh_host_ed25519_key
+    HostKey /etc/ssh/ssh_host_rsa_key
+
+    # Faster connection
+    # See: https://github.com/atmoz/sftp/issues/11
+    UseDNS no
+
+    # Limited access
+    PermitRootLogin no
+    X11Forwarding no
+    AllowTcpForwarding no
+
+    # Force sftp
+    Subsystem sftp internal-sftp
+    ForceCommand internal-sftp
+
+    # Enable this for more logs
+    LogLevel VERBOSE
+    SyslogFacility AUTH
+
+    # restrict
+    AllowUsers foo 1000
+
+    PidFile /var/run/sftp/pid/sshd.pid
+
+    # PORT
+    Port 2001
+
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: authorized-keys
+data:
+  authorized_keys: |
+    ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABAQDmePXKxnvgyvc5m5z5J997dE4pHezNDfYJDkYMWRFwj0BGD+Em/NvvubQZ4u5Jbv459BjTQHxFeGlwyUB3YrMwhyAcoyZ2tfrPfjYH+RcMKiD5uZFFlFxuSEc3buX5NldrDSWEpyuiBKcyMrg01azHHQwbzT5sF+f39TyNhnEk4OgrAohB0DkoTpCkTET1mRVvUuAVob30KXuE57ASZWYcbxXs8YLm2FD7C6NUnZeRfn9L56WqBHbuq4Ejf1llssIcNYJCoP0I/MtKYDNKO+cuTke9ibTK/bKUkhzoIup4V7JFd85kc6vGbWN4JypYJMoB3CwauGBz0L3QsncZ2jcf joostvdg@Euros
+
+--- 
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: usersconf
+data:
+  users.conf: |
+    foo::1000:100
+
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: ssh-ed-key
+data:
+  ssh_host_ed25519_key: |
+    -----BEGIN OPENSSH PRIVATE KEY-----
+    b3BlbnNzaC1rZXktdjEAAAAABG5vbmUAAAAEbm9uZQAAAAAAAAABAAAAMwAAAAtzc2gtZW
+    QyNTUxOQAAACD3k7//Zwe4OF/F+3WednrTA+Vaw5A0gtI0a1o/AsfC/gAAAJhbCvOXWwrz
+    lwAAAAtzc2gtZWQyNTUxOQAAACD3k7//Zwe4OF/F+3WednrTA+Vaw5A0gtI0a1o/AsfC/g
+    AAAECXR93GvFj+oYYlTHx0QWVm5cV7yKEftcyy+Ha7QBYtgveTv/9nB7g4X8X7dZ52etMD
+    5VrDkDSC0jRrWj8Cx8L+AAAAEXJvb3RAMjM0NjFhMjViMjViAQIDBA==
+    -----END OPENSSH PRIVATE KEY-----
+
+---
+
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: ssh-key
+data:
+  ssh_host_rsa_key: |
+    -----BEGIN RSA PRIVATE KEY-----
+    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
+    -----END RSA PRIVATE KEY-----
